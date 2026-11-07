@@ -5,43 +5,6 @@ import CoreImage
 import ServiceManagement
 import SwiftUI
 
-struct Track: Decodable, Equatable {
-    let title: String
-    let artist: String
-    let album: String
-    let duration: Double
-    let anchorElapsedTime: Double
-    let timestamp: Double
-    let playbackRate: Double
-    let playing: Bool
-
-    var anchor: ProgressAnchor {
-        ProgressAnchor(durationMs: Int(duration * 1000), progressMs: Int(anchorElapsedTime * 1000),
-                       rate: playing ? playbackRate : 0,
-                       progressTs: timestamp > 0 ? Int(timestamp * 1000) : nil)
-    }
-}
-
-struct Playback: Decodable, Equatable {
-    let running: Bool
-    let track: Track?
-    let id: String
-}
-
-struct LyricLine: Equatable {
-    let startMs: Int
-    let endMs: Int
-    let text: String
-    let words: [SyncedLyricWord]
-    let translation: String?
-}
-
-extension LyricLine: Decodable {}
-
-struct ParsedLyrics: Decodable {
-    let lines: [LyricLine]?
-}
-
 enum Surface: Hashable {
     case menu, island, expanded
 }
@@ -90,8 +53,7 @@ struct LyricLayout {
 
 @MainActor
 final class PlaybackModel: ObservableObject {
-    static let directory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Bodian Lyrics", isDirectory: true)
+    static let directory = BodianFiles.directory
 
     private let backgroundService = SMAppService.agent(plistName: "me.taulee.bodianlyrics.engine.plist")
     @Published private(set) var backgroundStatus: SMAppService.Status = .notRegistered
@@ -146,12 +108,12 @@ final class PlaybackModel: ObservableObject {
 
     private func saveFollowLaunch() throws {
         try FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
-        try String(preferences.followLaunch).write(to: Self.directory.appendingPathComponent("follow-launch"),
+        try String(preferences.followLaunch).write(to: BodianFiles.followLaunch,
                                                    atomically: true, encoding: .utf8)
     }
 
     func readPlayback() {
-        let url = Self.directory.appendingPathComponent("playback.json")
+        let url = BodianFiles.playback
         if let stamp = modified(url), playbackStamp != stamp {
             do {
                 let next = try JSONDecoder().decode(Playback.self, from: Data(contentsOf: url))
@@ -175,7 +137,7 @@ final class PlaybackModel: ObservableObject {
             }
         }
         guard !playback.id.isEmpty else { return }
-        let folder = Self.directory.appendingPathComponent("Parsed")
+        let folder = BodianFiles.parsed
         let lyrics = folder.appendingPathComponent(playback.id + ".json")
         if let stamp = modified(lyrics), stamp != lyricsStamp {
             do {

@@ -28,11 +28,11 @@ Apple 芯片版需要 macOS 14 或更新版本。
 | --- | --- |
 | `Sources/BodianLyrics/` | SwiftUI 设置、状态栏、灵动岛和播放状态接入 |
 | `Sources/BodianCore/` | 分句、逐字填色、进度外推和屏幕几何 |
-| `engine/` | Go 后台、播放状态和歌词缓存 |
+| `Sources/BodianEngine/` | Swift 后台，跟随波点进程、读取媒体状态和解析本地歌词 |
 | `native/` | Objective-C MediaRemote 桥接和 Perl 入口 |
 | `packaging/` | App 内的后台服务配置 |
 
-界面最低部署目标为 macOS 14。编译需要 Swift、Go 1.24 和 macOS SDK。`./build.sh` 会按当前 Mac 的架构构建并签名，DMG 输出到 `dist/`。
+界面最低部署目标为 macOS 14。编译需要 Swift 和 macOS SDK。媒体状态桥接使用系统自带的 Perl。`./build.sh` 会按当前 Mac 的架构构建并签名，DMG 输出到 `dist/`。
 
 ## 许可证
 

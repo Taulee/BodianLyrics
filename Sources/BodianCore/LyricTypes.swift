@@ -1,7 +1,7 @@
 import Foundation
 
 /// 词条带原文及相对整首歌的绝对毫秒时间。
-public struct SyncedLyricWord: Equatable, Decodable, Sendable {
+public struct SyncedLyricWord: Equatable, Codable, Sendable {
     public let text: String
     // 真实起止时间戳(绝对播放位置,毫秒)。填色进度不在这里预烤成一个数字,由 View 层用 TimelineView 按渲染帧频、从连续
     // 时钟直接现算 fillFraction。别改成"这里预算 fillFraction、定时 tick 推进 @Published、View 端 .animation(.linear) 补间":

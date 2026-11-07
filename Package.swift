@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "BodianCore"),
-        .executableTarget(name: "BodianLyrics", dependencies: ["BodianCore"])
+        .executableTarget(name: "BodianLyrics", dependencies: ["BodianCore"]),
+        .executableTarget(name: "BodianEngine", dependencies: ["BodianCore"])
     ]
 )

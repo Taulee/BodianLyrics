@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 project_dir="$PWD"
-version="${1:-0.2.0}"
+version="${1:-0.3.0}"
 architecture="$(uname -m)"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
@@ -16,7 +16,7 @@ app="$stage/BodianLyrics.app"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp "$swift_bin/BodianLyrics" "$contents/MacOS/BodianLyrics"
-(cd engine && go build -trimpath -o "$contents/MacOS/bodian-lyrics-engine" .)
+cp "$swift_bin/BodianEngine" "$contents/MacOS/bodian-lyrics-engine"
 xcrun clang -dynamiclib -fobjc-arc -O2 -mmacosx-version-min=14.0 -framework Foundation \
     -o "$contents/Resources/libnowplaying.dylib" native/nowplaying.m
 cp native/nowplaying.pl LICENSE "$contents/Resources/"
