@@ -9,7 +9,12 @@
 
 ## 安装
 
-从 [Releases](https://github.com/Taulee/BodianLyrics/releases) 下载 Apple 芯片版 ZIP 并解压。在解压出的目录运行 `bash install.sh`。脚本将 App 安装到 `~/Applications`，为当前用户启动后台服务，再打开设置。升级前先从状态栏退出波点歌词。
+发布包适用于 Apple 芯片 Mac，要求 macOS 14 或更新版本。
+
+1. 从 [GitHub Releases](https://github.com/Taulee/BodianLyrics/releases/latest) 下载 `.dmg` 并打开。
+2. 双击「安装波点歌词.command」。脚本会把 App 安装到 `~/Applications/`，启动当前用户的歌词后台，并打开设置。
+
+也可以下载 ZIP，解压后在解压目录运行 `bash install.sh`。升级前先从状态栏退出波点歌词。
 
 发布包采用临时签名，未经 Apple 公证。macOS 若拦截首次打开，可在「系统设置 → 隐私与安全性」里查看这次拦截并选择是否允许。
 
