@@ -1,9 +1,12 @@
 import AppKit
 import BodianCore
+import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: PlaybackModel
+    @State private var registrationError = ""
+    @State private var showsRegistrationError = false
 
     private var p: Preferences { model.preferences }
     private var b: Binding<Preferences> { $model.preferences }
@@ -16,10 +19,40 @@ struct SettingsView: View {
         }
         .padding(14)
         .frame(minWidth: 565, minHeight: 620)
+        .alert(p.label("无法启用歌词后台", "Could not enable the lyrics service"),
+               isPresented: $showsRegistrationError) {
+            Button(p.label("好", "OK"), role: .cancel) {}
+        } message: {
+            Text(registrationError)
+        }
     }
 
     private var general: some View {
         Form {
+            if model.backgroundStatus != .enabled {
+                Section(p.label("歌词后台", "Lyrics service")) {
+                    if model.backgroundStatus == .requiresApproval {
+                        Text(p.label("请在系统设置中允许波点歌词在后台运行。",
+                                     "Allow Bodian Lyrics to run in the background in System Settings."))
+                        Button(p.label("打开登录项设置", "Open Login Items Settings")) {
+                            SMAppService.openSystemSettingsLoginItems()
+                        }
+                    } else {
+                        Text(p.label("歌词后台读取本地歌词，并可在你打开波点音乐时唤起歌词界面。",
+                                     "The lyrics service reads local lyrics and can open the display when Bodian Music launches."))
+                        Button(p.label("启用歌词后台", "Enable Lyrics Service")) {
+                            do {
+                                try model.enableBackgroundService()
+                            } catch {
+                                if model.backgroundStatus != .requiresApproval {
+                                    registrationError = error.localizedDescription
+                                    showsRegistrationError = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Section(p.label("应用", "App")) {
                 Picker(p.label("语言", "Language"), selection: b.language) {
                     Text("简体中文").tag("zh-Hans")

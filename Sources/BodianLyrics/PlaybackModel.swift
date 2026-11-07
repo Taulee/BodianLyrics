@@ -2,6 +2,7 @@ import AppKit
 import BodianCore
 import Combine
 import CoreImage
+import ServiceManagement
 import SwiftUI
 
 struct Track: Decodable, Equatable {
@@ -92,6 +93,9 @@ final class PlaybackModel: ObservableObject {
     static let directory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Bodian Lyrics", isDirectory: true)
 
+    private let backgroundService = SMAppService.agent(plistName: "me.taulee.bodianlyrics.engine.plist")
+    @Published private(set) var backgroundStatus: SMAppService.Status = .notRegistered
+
     @Published var preferences: Preferences {
         didSet {
             do {
@@ -129,7 +133,19 @@ final class PlaybackModel: ObservableObject {
         updateLayouts()
     }
 
-    func saveFollowLaunch() throws {
+    func refreshBackgroundStatus() {
+        let status = backgroundService.status
+        if status != backgroundStatus { backgroundStatus = status }
+    }
+
+    func enableBackgroundService() throws {
+        defer { refreshBackgroundStatus() }
+        try saveFollowLaunch()
+        try backgroundService.register()
+    }
+
+    private func saveFollowLaunch() throws {
+        try FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
         try String(preferences.followLaunch).write(to: Self.directory.appendingPathComponent("follow-launch"),
                                                    atomically: true, encoding: .utf8)
     }

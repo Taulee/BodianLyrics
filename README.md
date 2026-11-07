@@ -5,16 +5,14 @@
 ## 功能
 
 - 灵动岛和状态栏显示歌词。
-- 设计上由用户的 LaunchAgent 保持后台运行，使界面可随波点音乐启动和退出。手动退出界面后，下次打开波点仍可唤起。
+- 启用歌词后台后，界面可随波点音乐启动和退出。手动退出歌词界面后，下次打开波点仍可唤起。
 
 ## 安装
 
-发布包适用于 Apple 芯片 Mac，要求 macOS 14 或更新版本。
+Apple 芯片版需要 macOS 14 或更新版本。
 
-1. 从 [GitHub Releases](https://github.com/Taulee/BodianLyrics/releases/latest) 下载 `.dmg` 并打开。
-2. 双击「安装波点歌词.command」。脚本会把 App 安装到 `~/Applications/`，启动当前用户的歌词后台，并打开设置。
-
-也可以下载 ZIP，解压后在解压目录运行 `bash install.sh`。升级前先从状态栏退出波点歌词。
+1. 打开新版 DMG，把 `BodianLyrics.app` 拖到「应用程序」。
+2. 首次打开 App，在「通用」点「启用歌词后台」。若系统要求授权，打开登录项设置并允许波点歌词在后台运行。
 
 发布包采用临时签名，未经 Apple 公证。macOS 若拦截首次打开，可在「系统设置 → 隐私与安全性」里查看这次拦截并选择是否允许。
 
@@ -32,8 +30,9 @@
 | `Sources/BodianCore/` | 分句、逐字填色、进度外推和屏幕几何 |
 | `engine/` | Go 后台、播放状态和歌词缓存 |
 | `native/` | Objective-C MediaRemote 桥接和 Perl 入口 |
+| `packaging/` | App 内的后台服务配置 |
 
-界面最低部署目标为 macOS 14。编译需要 Swift、Go 1.24 和 macOS SDK。`./build.sh 0.1.0` 会按当前 Mac 的架构构建并签名，ZIP 输出到 `dist/`。解压 ZIP 后可用同一个安装脚本。
+界面最低部署目标为 macOS 14。编译需要 Swift、Go 1.24 和 macOS SDK。`./build.sh` 会按当前 Mac 的架构构建并签名，DMG 输出到 `dist/`。
 
 ## 许可证
 

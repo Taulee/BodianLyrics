@@ -76,7 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.poll() }
         }
         RunLoop.main.add(timer, forMode: .common)
-        if CommandLine.arguments.contains("--settings") { showSettings() }
+        model.refreshBackgroundStatus()
+        if model.backgroundStatus != .enabled { showSettings() }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model.refreshBackgroundStatus()
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {

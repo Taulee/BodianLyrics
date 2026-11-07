@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 project_dir="$PWD"
-version="${1:-0.1.0}"
+version="${1:-0.2.0}"
 architecture="$(uname -m)"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
@@ -14,13 +14,13 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 app="$stage/BodianLyrics.app"
 contents="$app/Contents"
-mkdir -p "$contents/MacOS" "$contents/Resources"
+mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp "$swift_bin/BodianLyrics" "$contents/MacOS/BodianLyrics"
 (cd engine && go build -trimpath -o "$contents/MacOS/bodian-lyrics-engine" .)
 xcrun clang -dynamiclib -fobjc-arc -O2 -mmacosx-version-min=14.0 -framework Foundation \
     -o "$contents/Resources/libnowplaying.dylib" native/nowplaying.m
 cp native/nowplaying.pl LICENSE "$contents/Resources/"
-cp install.sh "$stage/"
+cp packaging/me.taulee.bodianlyrics.engine.plist "$contents/Library/LaunchAgents/"
 
 cat > "$contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,6 +45,7 @@ codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 
 mkdir -p "$project_dir/dist"
-archive="$project_dir/dist/BodianLyrics-$version-macos-$architecture.zip"
-(cd "$stage" && /usr/bin/zip -qry "$archive" BodianLyrics.app install.sh)
-printf '%s\n' "$archive"
+image="$project_dir/dist/BodianLyrics-$version-macos-$architecture.dmg"
+ln -s /Applications "$stage/Applications"
+hdiutil create -ov -srcfolder "$stage" -volname "Bodian Lyrics" -format UDZO "$image"
+printf '%s\n' "$image"

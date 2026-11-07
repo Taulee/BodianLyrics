@@ -150,8 +150,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	app := os.Args[1]
-	resources := filepath.Join(app, "Contents", "Resources")
+	executable, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+	contents := filepath.Dir(filepath.Dir(executable))
+	app := filepath.Dir(contents)
+	resources := filepath.Join(contents, "Resources")
 	data := filepath.Join(home, "Library", "Application Support", "Bodian Lyrics")
 	parsed := filepath.Join(data, "Parsed")
 	if err := os.MkdirAll(parsed, 0700); err != nil {
