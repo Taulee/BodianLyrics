@@ -13,7 +13,6 @@ struct MediaBridge {
         let timestamp: Double?
         let playbackRate: Double?
         let playing: Bool?
-        let artworkData: Data?
 
         var track: Track {
             Track(title: Self.clean(title), artist: Self.clean(artist), album: Self.clean(album),
@@ -28,12 +27,11 @@ struct MediaBridge {
         }
     }
 
-    func read(artwork: Bool = false) throws -> Snapshot? {
+    func read() throws -> Snapshot? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         process.arguments = [resources.appendingPathComponent("nowplaying.pl").path,
                              resources.appendingPathComponent("libnowplaying.dylib").path]
-        if artwork { process.arguments?.append("artwork") }
         let output = Pipe()
         process.standardOutput = output
         try process.run()

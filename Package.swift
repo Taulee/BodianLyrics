@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .target(name: "BodianCore"),
         .executableTarget(name: "BodianLyrics", dependencies: ["BodianCore"]),
-        .executableTarget(name: "BodianEngine", dependencies: ["BodianCore"])
+        .executableTarget(name: "BodianEngine", dependencies: ["BodianCore"]),
+        .testTarget(name: "BodianCoreTests", dependencies: ["BodianCore"])
     ]
 )

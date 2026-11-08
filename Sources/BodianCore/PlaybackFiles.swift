@@ -35,6 +35,10 @@ public struct Track: Codable, Equatable {
                        rate: playing ? playbackRate : 0,
                        progressTs: timestamp > 0 ? Int(timestamp * 1000) : nil)
     }
+
+    public func matchesSong(_ other: Track?) -> Bool {
+        title == other?.title && artist == other?.artist && album == other?.album && duration == other?.duration
+    }
 }
 
 public struct Playback: Codable, Equatable {
@@ -46,6 +50,21 @@ public struct Playback: Codable, Equatable {
         self.running = running
         self.track = track
         self.id = id
+    }
+
+    public func shouldPublish(after previous: Self, writtenAt: Date, now: Date) -> Bool {
+        guard self != previous else { return false }
+        guard running == previous.running, id == previous.id,
+              let track, let old = previous.track, track.matchesSong(old),
+              track.playing == old.playing, track.playbackRate == old.playbackRate else { return true }
+
+        let anchor = track.anchor
+        let oldAnchor = old.anchor
+        guard anchor.rate > 0, anchor.progressTs != nil, oldAnchor.progressTs != nil else {
+            return track.anchorElapsedTime != old.anchorElapsedTime || anchor.progressTs != oldAnchor.progressTs && anchor.rate > 0
+        }
+        let drift = abs(anchor.extrapolatedPositionMs(now: now) - oldAnchor.extrapolatedPositionMs(now: now))
+        return drift > LyricPlaybackClock.jitterToleranceMs || now.timeIntervalSince(writtenAt) >= 3
     }
 }
 
@@ -63,21 +82,12 @@ public struct LyricLine: Codable, Equatable {
         self.words = words
         self.translation = translation
     }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(startMs: try values.decode(Int.self, forKey: .startMs),
-                  endMs: try values.decode(Int.self, forKey: .endMs),
-                  text: try values.decode(String.self, forKey: .text),
-                  words: try values.decodeIfPresent([SyncedLyricWord].self, forKey: .words) ?? [],
-                  translation: try values.decodeIfPresent(String.self, forKey: .translation))
-    }
 }
 
 public struct ParsedLyrics: Codable {
     public let modified: String
     public let size: Int64
-    public let lines: [LyricLine]?
+    public let lines: [LyricLine]
 
     public init(modified: String, size: Int64, lines: [LyricLine]) {
         self.modified = modified

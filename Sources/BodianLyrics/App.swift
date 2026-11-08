@@ -1,5 +1,7 @@
 import AppKit
+import BodianCore
 import Combine
+import Darwin
 import SwiftUI
 
 @main
@@ -13,81 +15,113 @@ struct BodianLyricsApp {
     }
 }
 
-private final class StatusHost: NSHostingView<AnyView> {
+private final class StatusHost: NSHostingView<MenuBarView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+private final class DirectoryWatcher {
+    private let directory: URL
+    private let onChange: () -> Void
+    private var source: DispatchSourceFileSystemObject?
+
+    init(_ directory: URL, onChange: @escaping () -> Void) throws {
+        self.directory = directory
+        self.onChange = onChange
+        try start()
+    }
+
+    deinit { source?.cancel() }
+
+    private func start() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let descriptor = open(directory.path, O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO, userInfo: [NSURLErrorKey: directory])
+        }
+        let watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+                                                              eventMask: [.write, .delete, .rename], queue: .main)
+        watch.setCancelHandler { close(descriptor) }
+        watch.setEventHandler { [weak self] in
+            guard let self, let source else { return }
+            if !source.data.intersection([.delete, .rename]).isEmpty {
+                source.cancel()
+                self.source = nil
+                do {
+                    try start()
+                } catch {
+                    NSLog("Watch %@: %@", directory.path, error.localizedDescription)
+                }
+            }
+            onChange()
+        }
+        source = watch
+        watch.resume()
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private let model = PlaybackModel()
-    private let activeFollower = ActiveScreenFollower()
-    private var activeScreen: NSScreen?
     private var status: NSStatusItem!
     private var settings: NSWindow?
     private var subscriptions = Set<AnyCancellable>()
-    private var normalIslands: [String: IslandPanel] = [:]
-    private var centeredLyrics: [String: NotchLyricsWindow] = [:]
-    private var lockIsland: IslandPanel?
-    private var screenLocked = false
+    private var playbackWatcher: DirectoryWatcher?
+    private var lyricsWatcher: DirectoryWatcher?
     private var quitWork: DispatchWorkItem?
     private var wasRunning = false
-    private var menuWidth: CGFloat = 28
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         status = NSStatusBar.system.statusItem(withLength: 28)
+        let menu = NSMenu()
+        menu.delegate = self
+        menuNeedsUpdate(menu)
+        status.menu = menu
         if let button = status.button {
-            let content = SurfaceView(model: model, surface: .menu, iconOnly: false)
-                .fixedSize(horizontal: true, vertical: false)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { [weak self] width in
-                    guard let self else { return }
-                    menuWidth = ceil(width)
-                    updateStatusWidth()
-                }
-            let host = StatusHost(rootView: AnyView(content))
+            let host = StatusHost(rootView: MenuBarView(model: model, onWidthChange: { [weak self] width in
+                guard let self, status.length != width else { return }
+                status.length = width
+            }))
             host.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(host)
             NSLayoutConstraint.activate([
                 host.centerXAnchor.constraint(equalTo: button.centerXAnchor),
                 host.centerYAnchor.constraint(equalTo: button.centerYAnchor)
             ])
-            updateStatusContent()
         }
 
-        activeFollower.onFollow = { [weak self] screen in
-            self?.activeScreen = screen
-            self?.refreshPanels()
-        }
-        activeFollower.canMove = { [weak self] in
-            self?.normalIslands.values.contains { $0.expanded } == false
-        }
-        model.$preferences.dropFirst().sink { [weak self] _ in
+        model.$preferences.map(\.language).removeDuplicates().dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.preferencesChanged() }
         }.store(in: &subscriptions)
-        FullScreenSpaceMonitor.shared.$fullScreenDisplays.dropFirst().sink { [weak self] _ in
-            DispatchQueue.main.async { self?.refreshPanels() }
+        model.$preferences.map(\.followQuit).removeDuplicates().dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateQuitState() }
         }.store(in: &subscriptions)
 
-        let distributed = DistributedNotificationCenter.default()
-        distributed.addObserver(self, selector: #selector(lockScreen), name: .init("com.apple.screenIsLocked"), object: nil)
-        distributed.addObserver(self, selector: #selector(unlockScreen), name: .init("com.apple.screenIsUnlocked"), object: nil)
         preferencesChanged()
-        poll()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.poll() }
+        do {
+            playbackWatcher = try DirectoryWatcher(BodianFiles.directory) { [weak self] in self?.reloadPlayback() }
+            lyricsWatcher = try DirectoryWatcher(BodianFiles.parsed) { [weak self] in self?.model.readLyrics() }
+        } catch {
+            NSApp.presentError(error)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        model.refreshBackgroundStatus()
+        reloadPlayback()
+        do {
+            try model.updateBackgroundRegistration()
+        } catch {
+            if model.backgroundStatus != .requiresApproval {
+                showSettings()
+                NSApp.presentError(error)
+                return
+            }
+        }
         if model.backgroundStatus != .enabled { showSettings() }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         model.refreshBackgroundStatus()
-    }
-
-    func applicationDidChangeScreenParameters(_ notification: Notification) {
-        activeFollower.update(wanted: model.preferences.islandFollowActive && !model.preferences.islandAllScreens)
-        activeFollower.follow()
-        refreshPanels()
+        reloadPlayback()
+        model.readLyrics()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -95,18 +129,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func poll() {
-        let before = model.playback
+    private func reloadPlayback() {
         model.readPlayback()
-        if before.running != model.playback.running || before.track?.playing != model.playback.track?.playing
-            || (before.track == nil) != (model.playback.track == nil) {
-            refreshPanels()
-        }
+        updateQuitState()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        updateQuitState()
+    }
+
+    private func updateQuitState() {
         if model.playback.running {
             wasRunning = true
+        }
+        if model.playback.running || !model.preferences.followQuit {
             quitWork?.cancel()
             quitWork = nil
-        } else if wasRunning && model.preferences.followQuit && quitWork == nil {
+        } else if wasRunning && quitWork == nil {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 quitWork = nil
@@ -121,31 +160,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func preferencesChanged() {
         let p = model.preferences
-        let menu = NSMenu()
-        menu.addItem(withTitle: p.label("设置…", "Settings…"), action: #selector(showSettings), keyEquivalent: ",").target = self
-        menu.addItem(.separator())
-        menu.addItem(withTitle: p.label("退出波点歌词", "Quit Bodian Lyrics"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        status.menu = menu
         status.button?.setAccessibilityLabel(p.label("波点歌词", "Bodian Lyrics"))
         settings?.title = p.label("波点歌词设置", "Bodian Lyrics Settings")
-        activeFollower.update(wanted: p.islandFollowActive && !p.islandAllScreens)
-        updateStatusContent()
-        refreshPanels()
     }
 
-    private func updateStatusContent() {
-        guard let host = status.button?.subviews.first(where: { $0 is StatusHost }) as? StatusHost else { return }
-        host.rootView = AnyView(SurfaceView(model: model, surface: .menu, iconOnly: model.preferences.menuCentered)
-            .fixedSize(horizontal: true, vertical: false)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { [weak self] width in
-                guard let self else { return }
-                menuWidth = ceil(width)
-                updateStatusWidth()
-            })
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let p = model.preferences
+        menu.removeAllItems()
+        menu.addItem(withTitle: p.label("设置…", "Settings…"), action: #selector(showSettings), keyEquivalent: ",").target = self
+        let offsetTitle = p.label("歌词时间偏移", "Lyric timing offset")
+        if let songID = model.lyricOffsetSongID, let offset = model.lyricOffset {
+            let item = menu.addItem(withTitle: "\(offsetTitle) (\(p.offsetLabel(offset)))", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            for action in LyricOffsetAction.allCases {
+                let option = submenu.addItem(withTitle: action.title(p), action: #selector(adjustLyricOffset(_:)), keyEquivalent: "")
+                option.target = self
+                option.tag = action.rawValue
+                option.representedObject = songID
+                option.isEnabled = action != .reset || offset != 0
+            }
+            item.submenu = submenu
+        } else {
+            menu.addItem(withTitle: offsetTitle, action: nil, keyEquivalent: "").isEnabled = false
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: p.label("退出波点歌词", "Quit Bodian Lyrics"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
-    private func updateStatusWidth() {
-        status.length = max(24, menuWidth)
+    @objc private func adjustLyricOffset(_ sender: NSMenuItem) {
+        guard let songID = sender.representedObject as? String, songID == model.lyricOffsetSongID,
+              let action = LyricOffsetAction(rawValue: sender.tag) else { return }
+        model.adjustLyricOffset(action)
     }
 
     @objc private func showSettings() {
@@ -154,169 +200,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = model.preferences.label("波点歌词设置", "Bodian Lyrics Settings")
             window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+            window.delegate = self
             window.isReleasedWhenClosed = false
             window.center()
             settings = window
         }
         settings?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func lockScreen() {
-        screenLocked = true
-        refreshPanels()
-    }
-
-    @objc private func unlockScreen() {
-        screenLocked = false
-        refreshPanels()
-    }
-
-    private func refreshPanels() {
-        let p = model.preferences
-        let screens = NSScreen.screens
-        let primary = screens.first
-        let islandScreens: [NSScreen]
-        if p.islandAllScreens {
-            islandScreens = screens
-        } else if let screen = (p.islandFollowActive ? activeScreen : ScreenIdentity.screen(withID: p.islandScreen)) ?? primary {
-            islandScreens = [screen]
-        } else {
-            islandScreens = []
-        }
-
-        let track = model.playback.track
-        let showIsland = p.islandEnabled && track != nil && (!p.islandHideWhenPaused || track?.playing == true)
-        let visible = screenLocked || !showIsland ? [] : islandScreens.filter {
-            !p.islandHideFullScreen || !FullScreenSpaceMonitor.shared.covers($0)
-        }
-        let visibleIDs = Set(visible.compactMap(ScreenIdentity.id(of:)))
-        for (id, panel) in normalIslands where !visibleIDs.contains(id) {
-            panel.window.orderOut(nil)
-            normalIslands.removeValue(forKey: id)
-        }
-        for screen in visible {
-            guard let id = ScreenIdentity.id(of: screen) else { continue }
-            let panel = normalIslands[id] ?? IslandPanel(model: model, screen: screen, locked: false)
-            normalIslands[id] = panel
-            panel.update(screen: screen)
-        }
-
-        if screenLocked && showIsland && p.islandLockScreen && !p.islandHideInCapture, let primary {
-            if lockIsland == nil {
-                let panel = IslandPanel(model: model, screen: primary, locked: true)
-                if LockScreenSpace.adopt(panel.window) { lockIsland = panel }
-            }
-            lockIsland?.update(screen: primary)
-        } else {
-            lockIsland?.window.orderOut(nil)
-        }
-
-        let menuScreens = p.menuScreen.isEmpty ? screens : screens.filter { ScreenIdentity.id(of: $0) == p.menuScreen }
-        let centered = p.menuEnabled && p.menuCentered && !screenLocked && track?.playing == true ? menuScreens : []
-        let centerIDs = Set(centered.compactMap(ScreenIdentity.id(of:)))
-        for (id, panel) in centeredLyrics where !centerIDs.contains(id) {
-            panel.orderOut(nil)
-            centeredLyrics.removeValue(forKey: id)
-        }
-        for screen in centered {
-            guard let id = ScreenIdentity.id(of: screen) else { continue }
-            let panel = centeredLyrics[id] ?? makeCenteredPanel()
-            centeredLyrics[id] = panel
-            let top = screen.auxiliaryTopLeftArea
-            let width = min(p.menuWidth + 38, (top?.width ?? screen.frame.width) - 10)
-            let center = top.map { $0.maxX - width / 2 - 4 } ?? screen.frame.midX
-            let height = top?.height ?? NSStatusBar.system.thickness
-            panel.setFrame(NSRect(x: center - width / 2, y: screen.frame.maxY - height,
-                                  width: width, height: height), display: true)
-            panel.orderFrontRegardless()
-        }
-    }
-
-    private func makeCenteredPanel() -> NotchLyricsWindow {
-        let panel = NotchLyricsWindow(contentRect: .zero)
-        panel.appearance = nil
-        panel.ignoresMouseEvents = true
-        panel.contentView = NSHostingView(rootView: SurfaceView(model: model, surface: .menu))
-        return panel
-    }
-}
-
-@MainActor
-private final class IslandPanel {
-    let window = NotchLyricsWindow(contentRect: .zero)
-    private let model: PlaybackModel
-    private let locked: Bool
-    private var screen: NSScreen
-    private var host: NSHostingView<AnyView>!
-    private var height: CGFloat = 58
-    private var width: CGFloat = 252
-    private var collapseWork: DispatchWorkItem?
-    private(set) var expanded = false
-
-    init(model: PlaybackModel, screen: NSScreen, locked: Bool) {
-        self.model = model
-        self.screen = screen
-        self.locked = locked
-        host = NSHostingView(rootView: AnyView(EmptyView()))
-        host.sizingOptions = []
-        window.contentView = host
-        window.ignoresMouseEvents = locked
-        window.onScrollWheel = { [weak self] event in
-            guard let self, model.preferences.islandGestures else { return }
-            if event.scrollingDeltaY < -4 { setExpanded(true) }
-            if event.scrollingDeltaY > 4 { setExpanded(false) }
-        }
-        setContent()
-        place()
-    }
-
-    func update(screen: NSScreen) {
-        self.screen = screen
-        window.sharingType = model.preferences.islandHideInCapture ? .none : .readWrite
-        setContent()
-        place()
-        if !window.isVisible { window.orderFrontRegardless() }
-    }
-
-    private func setContent() {
-        let p = model.preferences
-        let top = screen.auxiliaryTopLeftArea
-        let notchWidth = top.flatMap { left in screen.auxiliaryTopRightArea.map { $0.minX - left.maxX } } ?? 96
-        let topHeight = top?.height ?? NSStatusBar.system.thickness
-        let collapsed = !expanded && p.islandCollapseWhenPaused && model.playback.track?.playing != true
-        let preferred = expanded ? p.islandExpandedWidth : collapsed ? notchWidth + 74 : p.islandWidth
-        width = min(screen.frame.width, max(notchWidth + 64, preferred))
-        host.rootView = AnyView(SurfaceView(model: model, surface: expanded ? .expanded : .island,
-                                           notchWidth: notchWidth, topHeight: topHeight,
-                                           onHover: { [weak self] in self?.hover($0) })
-            .frame(width: width)
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak self] measured in
-                guard let self, height != ceil(measured) else { return }
-                height = ceil(measured)
-                place()
-            })
-    }
-
-    private func hover(_ inside: Bool) {
-        collapseWork?.cancel()
-        guard !locked else { return }
-        let work = DispatchWorkItem { [weak self] in self?.setExpanded(inside) }
-        collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (inside ? 0.22 : 0.32), execute: work)
-    }
-
-    private func setExpanded(_ value: Bool) {
-        guard value != expanded else { return }
-        expanded = value
-        setContent()
-        place()
-    }
-
-    private func place() {
-        let rect = NSRect(x: screen.frame.midX - width / 2, y: screen.frame.maxY - height,
-                          width: width, height: height)
-        if window.frame != rect { window.setFrame(rect, display: true) }
     }
 }

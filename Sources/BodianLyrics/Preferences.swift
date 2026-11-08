@@ -1,16 +1,10 @@
 import AppKit
 import SwiftUI
 
-enum AlignmentChoice: String, Codable, CaseIterable {
-    case leading, center, trailing
+enum AlignmentChoice: String, Codable {
+    case center, trailing
 
-    var alignment: Alignment {
-        switch self {
-        case .leading: return .leading
-        case .center: return .center
-        case .trailing: return .trailing
-        }
-    }
+    var alignment: Alignment { self == .center ? .center : .trailing }
 }
 
 enum WeightChoice: String, Codable, CaseIterable {
@@ -26,51 +20,31 @@ enum WeightChoice: String, Codable, CaseIterable {
     }
 }
 
-enum SecondaryLine: String, Codable, CaseIterable {
-    case nextLine, translation, inlineTranslation, off
-}
+enum LyricOffsetAction: Int, CaseIterable {
+    case earlier = 100
+    case later = -100
+    case reset = 0
 
-enum MenuContent: String, Codable, CaseIterable {
-    case lyrics, translation, title, titleArtist
-}
-
-enum IconPosition: String, Codable, CaseIterable {
-    case leading, trailing, off
-}
-
-enum IconSize: String, Codable, CaseIterable {
-    case small, standard, large
-
-    var points: CGFloat {
+    func title(_ preferences: Preferences) -> String {
         switch self {
-        case .small: return 12
-        case .standard: return 14
-        case .large: return 17
+        case .earlier: return preferences.label("提前 100 毫秒", "Earlier by 100 ms")
+        case .later: return preferences.label("延后 100 毫秒", "Later by 100 ms")
+        case .reset: return preferences.label("重置", "Reset")
         }
     }
 }
 
-enum IslandStyle: String, Codable, CaseIterable {
-    case solidBlack, frostedGlass, darkGradient, coverArt
-}
+struct MenuPosition: Codable, Equatable {
+    static let horizontalLimit = 6
+    static let verticalLimit = 4
 
-enum EarContent: String, Codable, CaseIterable {
-    case none, artwork, title, artist, album, elapsed, remaining, player
-}
-
-enum Side: String, Codable, CaseIterable {
-    case left, right
-}
-
-enum ProgressStyle: String, Codable, CaseIterable {
-    case off, ears, bottom
-}
-
-enum IslandColor: String, Codable, CaseIterable {
-    case accent, rainbow
+    var x = 0
+    var y = 0
 }
 
 struct Preferences: Codable, Equatable {
+    static let menuBarFontSize = Double(NSFont.menuBarFont(ofSize: 0).pointSize)
+
     var language = Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh-Hans" : "en"
     var followLaunch = true
     var followQuit = true
@@ -78,70 +52,29 @@ struct Preferences: Codable, Equatable {
     var mergeShortLines = false
     var offsets: [String: Int] = [:]
 
-    var menuEnabled = true
     var menuWidth = 250.0
     var menuMaxCharacters = 60
     var menuFixedWidth = false
-    var menuAlignment = AlignmentChoice.leading
+    var menuAlignment = AlignmentChoice.center
     var menuKaraoke = true
     var menuTextColor = ""
     var menuFillColor = ""
-    var menuRainbow = false
-    var menuIconPosition = IconPosition.leading
-    var menuCentered = false
-    var menuScreen = ""
     var menuFontFamily = ""
     var menuFontWeight = WeightChoice.regular
-    var menuFontSize = 0.0
-    var menuSecondary = SecondaryLine.nextLine
-    var menuTitleWithoutLyrics = true
-    var menuContent = MenuContent.lyrics
-    var menuIconAnimates = true
-    var menuIconSize = IconSize.standard
+    var menuFontSize = Self.menuBarFontSize
+    var menuPosition: MenuPosition?
 
-    var islandEnabled = true
-    var islandKaraoke = true
-    var islandHideFullScreen = true
-    var islandShowLyrics = true
-    var islandEqualizer = true
-    var islandExpandedNextLine = true
-    var islandExpandedLyricList = true
-    var islandExpandedOffset = true
-    var islandExpandedTitle = true
-    var islandExpandedArtist = true
-    var islandExpandedAlbum = true
-    var islandTrackDrop = true
-    var islandGestures = true
-    var islandProgress = ProgressStyle.ears
-    var islandHideInCapture = false
-    var islandHideWhenPaused = false
-    var islandLockScreen = false
-    var islandCollapseWithoutLyrics = false
-    var islandFadeOnHover = false
-    var islandAllScreens = false
-    var islandFollowActive = false
-    var islandCollapseWhenPaused = false
-    var islandExpandedArtwork = false
-    var islandLyricArtwork = false
-    var islandStyle = IslandStyle.coverArt
-    var islandExpandedStyle: IslandStyle?
-    var islandEqualizerSide = Side.right
-    var islandListLines = 5
-    var islandLyricArtworkSide = Side.right
-    var islandAlignment: AlignmentChoice?
-    var islandColor = IslandColor.accent
-    var islandSecondary = SecondaryLine.nextLine
-    var islandFontFamily = ""
-    var islandFontWeight = WeightChoice.semibold
-    var islandFontSize = 13.0
-    var islandRowHeight = 26.0
-    var islandLeftEar = EarContent.artwork
-    var islandRightEar = EarContent.none
-    var islandScreen = ""
-    var islandWidth = 252.0
-    var islandExpandedWidth = 482.0
-    var islandCorner = -1.0
-    var islandExpandedCorner = -1.0
+    var menuFont: NSFont {
+        if menuFontSize == Self.menuBarFontSize, menuFontFamily.isEmpty, menuFontWeight == .regular {
+            return NSFont.menuBarFont(ofSize: 0)
+        }
+        return lyricFont(family: menuFontFamily, size: menuFontSize, weight: menuFontWeight.weight)
+    }
+
+    func offsetLabel(_ offset: Int) -> String {
+        let signed = offset > 0 ? "+\(offset)" : String(offset)
+        return label("\(signed) 毫秒", "\(signed) ms")
+    }
 
     func label(_ chinese: String, _ english: String) -> String {
         language == "zh-Hans" ? chinese : english

@@ -1,23 +1,25 @@
 import AppKit
 import BodianCore
 import Combine
-import CoreImage
+import Security
 import ServiceManagement
-import SwiftUI
-
-enum Surface: Hashable {
-    case menu, island, expanded
-}
 
 struct LyricLayout {
-    let lines: [LyricLine]
+    struct Line {
+        let startMs: Int
+        let endMs: Int
+        let text: MenuText
+    }
 
-    init(_ lines: [LyricLine], width: CGFloat, font: NSFont, secondary: SecondaryLine, options: LineBreakOptions) {
-        let main = LineLayoutBudget.Row(maxWidth: width) { textWidth($0, font: font) }
-        let small = NSFont(descriptor: font.fontDescriptor, size: font.pointSize * 0.8) ?? font
-        let sub = LineLayoutBudget.Row(maxWidth: width) { textWidth($0, font: small) }
-        let budget = LineLayoutBudget(main: main, preview: secondary == .nextLine ? sub : nil,
-                                      translation: [.translation, .inlineTranslation].contains(secondary) ? sub : nil)
+    let lines: [Line]
+    let contentWidth: CGFloat
+
+    init(_ lines: [LyricLine], preferences: Preferences) {
+        let font = preferences.menuFont
+        let options = LineBreakOptions(splitsLongLines: preferences.splitLongLines,
+                                       mergesShortLines: preferences.mergeShortLines)
+        let main = LineLayoutBudget.Row(maxWidth: preferences.menuWidth) { textWidth($0, font: font) }
+        let budget = LineLayoutBudget(main: main, preview: nil, translation: nil)
         let script = LyricScript.detect(song: lines.map(\.text).joined(separator: "\n"))
         let input = lines.enumerated().map { i, line in
             let next = i + 1 < lines.count ? lines[i + 1].startMs : nil
@@ -28,21 +30,23 @@ struct LyricLayout {
                                         gapAfter: next.map { $0 - line.endMs >= 6000 } ?? false,
                                         script: LyricScript.detect(line: line.text, song: script))
         }
-        self.lines = LyricsSegmenter.segments(input, budget: budget, options: options).map { segment in
+        let measured = LyricsSegmenter.segments(input, budget: budget, options: options).map { segment -> Line in
             let first = lines[segment.firstLine]
             if let part = segment.part {
-                return LyricLine(startMs: part.startMs, endMs: first.endMs, text: part.text,
-                                 words: part.estimated ? [] : part.words, translation: part.translation ?? first.translation)
+                let text = MenuText(part.text, words: part.estimated ? [] : part.words, font: font,
+                                    characterLimit: preferences.menuMaxCharacters)
+                return Line(startMs: part.startMs, endMs: first.endMs, text: text)
             }
             let range = lines[segment.firstLine...segment.lastLine]
             let words = input[segment.firstLine...segment.lastLine].enumerated().flatMap { index, line in
                 (index > 0 ? [SyncedLyricWord(text: " ", startMs: line.startMs, durationMs: 0)] : []) + (line.words ?? [])
             }
-            let translation = range.compactMap(\.translation).joined(separator: " ")
-            return LyricLine(startMs: first.startMs, endMs: range.last!.endMs,
-                             text: range.map(\.text).joined(separator: " "), words: words,
-                             translation: translation.isEmpty ? nil : translation)
+            let text = MenuText(range.map(\.text).joined(separator: " "), words: words, font: font,
+                                characterLimit: preferences.menuMaxCharacters)
+            return Line(startMs: first.startMs, endMs: range.last!.endMs, text: text)
         }
+        self.lines = measured
+        contentWidth = measured.map(\.text.width).max() ?? 0
     }
 
     func activeIndex(at position: Int) -> Int? {
@@ -54,6 +58,7 @@ struct LyricLayout {
 @MainActor
 final class PlaybackModel: ObservableObject {
     static let directory = BodianFiles.directory
+    private static let registeredEngineSignatureKey = "registeredEngineSignature"
 
     private let backgroundService = SMAppService.agent(plistName: "me.taulee.bodianlyrics.engine.plist")
     @Published private(set) var backgroundStatus: SMAppService.Status = .notRegistered
@@ -66,22 +71,37 @@ final class PlaybackModel: ObservableObject {
             } catch {
                 NSLog("%@", error.localizedDescription)
             }
-            updateLayouts()
+            updateLayout()
         }
     }
     @Published private(set) var playback = Playback(running: false, track: nil, id: "")
-    @Published private(set) var layouts: [Surface: LyricLayout] = [:]
-    @Published private(set) var artwork: NSImage?
-    @Published private(set) var coverTint: Color?
+    private(set) var lyricClock: LyricPlaybackClock?
+    @Published private(set) var layout: LyricLayout
     @Published private(set) var trackChangedAt = Date.distantPast
     private var lines: [LyricLine] = []
     private var playbackStamp: Date?
     private var lyricsStamp: Date?
-    private var coverStamp: Date?
     private var lastTrackTitle = ""
     private var lastTrackArtist = ""
 
+    var lyricOffsetSongID: String? {
+        playback.track != nil && !playback.id.isEmpty ? playback.id : nil
+    }
+
+    var lyricOffset: Int? {
+        lyricOffsetSongID.map { preferences.offsets[$0, default: 0] }
+    }
+
+    func adjustLyricOffset(_ action: LyricOffsetAction) {
+        guard let id = lyricOffsetSongID else { return }
+        let previous = preferences.offsets[id, default: 0]
+        let offset = action == .reset ? 0 : previous + action.rawValue
+        guard previous != offset else { return }
+        preferences.offsets[id] = offset == 0 ? nil : offset
+    }
+
     init() {
+        let preferences: Preferences
         if let data = UserDefaults.standard.data(forKey: "preferences") {
             do {
                 preferences = try JSONDecoder().decode(Preferences.self, from: data)
@@ -92,7 +112,8 @@ final class PlaybackModel: ObservableObject {
         } else {
             preferences = Preferences()
         }
-        updateLayouts()
+        self.preferences = preferences
+        layout = LyricLayout([], preferences: preferences)
     }
 
     func refreshBackgroundStatus() {
@@ -101,9 +122,56 @@ final class PlaybackModel: ObservableObject {
     }
 
     func enableBackgroundService() throws {
+        try registerBackgroundService(signature: engineSignature(), replacing: false)
+    }
+
+    func restartBackgroundService() async throws {
+        refreshBackgroundStatus()
+        guard backgroundStatus == .enabled else { return }
+        let signature = try engineSignature()
+        try saveFollowLaunch()
+        defer { refreshBackgroundStatus() }
+        try await backgroundService.unregister()
+        try registerBackgroundService(signature: signature)
+    }
+
+    func updateBackgroundRegistration() throws {
+        refreshBackgroundStatus()
+        guard backgroundStatus == .enabled else { return }
+        let signature = try engineSignature()
+        guard signature != UserDefaults.standard.data(forKey: Self.registeredEngineSignatureKey) else { return }
+        // 临时签名的后台换版后，系统原先登记的签名会阻止新版启动。
+        try registerBackgroundService(signature: signature, replacing: true)
+    }
+
+    private func registerBackgroundService(signature: Data, replacing: Bool) throws {
         defer { refreshBackgroundStatus() }
         try saveFollowLaunch()
+        if replacing { try backgroundService.unregister() }
+        try registerBackgroundService(signature: signature)
+    }
+
+    private func registerBackgroundService(signature: Data) throws {
         try backgroundService.register()
+        UserDefaults.standard.set(signature, forKey: Self.registeredEngineSignatureKey)
+    }
+
+    private func engineSignature() throws -> Data {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/bodian-lyrics-engine")
+        var code: SecStaticCode?
+        let codeStatus = SecStaticCodeCreateWithPath(url as CFURL, [], &code)
+        guard codeStatus == errSecSuccess, let code else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(codeStatus))
+        }
+        var info: CFDictionary?
+        let infoStatus = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info)
+        guard infoStatus == errSecSuccess else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(infoStatus))
+        }
+        guard let signature = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecCSUnsigned))
+        }
+        return signature
     }
 
     private func saveFollowLaunch() throws {
@@ -117,42 +185,44 @@ final class PlaybackModel: ObservableObject {
         if let stamp = modified(url), playbackStamp != stamp {
             do {
                 let next = try JSONDecoder().decode(Playback.self, from: Data(contentsOf: url))
-                if next.id != playback.id {
+                let changedSongID = next.id != playback.id
+                if changedSongID {
                     lyricsStamp = nil
-                    coverStamp = nil
-                    artwork = nil
-                    coverTint = nil
                     lines = []
-                    updateLayouts()
+                    updateLayout()
                 }
                 if let track = next.track, track.title != lastTrackTitle || track.artist != lastTrackArtist {
                     lastTrackTitle = track.title
                     lastTrackArtist = track.artist
                     trackChangedAt = Date()
                 }
+                if let track = next.track {
+                    let sameTrack = track.matchesSong(playback.track) && (!changedSongID || playback.id.isEmpty)
+                    lyricClock = LyricPlaybackClock(anchor: track.anchor, previous: sameTrack ? lyricClock : nil, now: .now)
+                } else {
+                    lyricClock = nil
+                }
                 playback = next
                 playbackStamp = stamp
+                if changedSongID { readLyrics() }
             } catch {
                 NSLog("%@", error.localizedDescription)
             }
         }
+    }
+
+    func readLyrics() {
         guard !playback.id.isEmpty else { return }
         let folder = BodianFiles.parsed
         let lyrics = folder.appendingPathComponent(playback.id + ".json")
         if let stamp = modified(lyrics), stamp != lyricsStamp {
             do {
-                lines = try JSONDecoder().decode(ParsedLyrics.self, from: Data(contentsOf: lyrics)).lines ?? []
+                lines = try JSONDecoder().decode(ParsedLyrics.self, from: Data(contentsOf: lyrics)).lines
                 lyricsStamp = stamp
-                updateLayouts()
+                updateLayout()
             } catch {
                 NSLog("%@", error.localizedDescription)
             }
-        }
-        let cover = folder.appendingPathComponent(playback.id + ".cover")
-        if let stamp = modified(cover), stamp != coverStamp {
-            artwork = NSImage(contentsOf: cover)
-            coverTint = artwork.flatMap(Self.averageColor)
-            coverStamp = stamp
         }
     }
 
@@ -167,43 +237,7 @@ final class PlaybackModel: ObservableObject {
         }
     }
 
-    func font(for surface: Surface) -> NSFont {
-        let p = preferences
-        if surface == .menu {
-            return lyricFont(family: p.menuFontFamily, size: p.menuFontSize == 0 ? 13 : p.menuFontSize, weight: p.menuFontWeight.weight)
-        }
-        return lyricFont(family: p.islandFontFamily, size: p.islandFontSize, weight: p.islandFontWeight.weight)
-    }
-
-    func width(for surface: Surface) -> CGFloat {
-        let p = preferences
-        switch surface {
-        case .menu: return p.menuWidth
-        case .island: return p.islandWidth - 28 - (p.islandLyricArtwork ? 32 : 0)
-        case .expanded: return p.islandExpandedWidth - 36
-        }
-    }
-
-    private func updateLayouts() {
-        let p = preferences
-        let options = LineBreakOptions(splitsLongLines: p.splitLongLines, mergesShortLines: p.mergeShortLines)
-        layouts = Dictionary(uniqueKeysWithValues: [Surface.menu, .island, .expanded].map { surface in
-            (surface, LyricLayout(lines, width: width(for: surface), font: font(for: surface),
-                                  secondary: surface == .menu ? p.menuSecondary : p.islandSecondary, options: options))
-        })
-    }
-
-    private static func averageColor(_ image: NSImage) -> Color? {
-        var rect = CGRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
-              let filter = CIFilter(name: "CIAreaAverage") else { return nil }
-        let input = CIImage(cgImage: cgImage)
-        filter.setValue(input, forKey: kCIInputImageKey)
-        filter.setValue(CIVector(cgRect: input.extent), forKey: kCIInputExtentKey)
-        guard let output = filter.outputImage else { return nil }
-        var pixel = [UInt8](repeating: 0, count: 4)
-        CIContext().render(output, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                           format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
-        return Color(red: Double(pixel[0]) / 510 + 0.5, green: Double(pixel[1]) / 510 + 0.5, blue: Double(pixel[2]) / 510 + 0.5)
+    private func updateLayout() {
+        layout = LyricLayout(lines, preferences: preferences)
     }
 }

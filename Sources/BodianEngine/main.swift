@@ -17,6 +17,7 @@ final class Engine {
     private var previousTrack: Track?
     private var songID = ""
     private var lastState: Playback?
+    private var lastWriteAt = Date.distantPast
 
     init() throws {
         let contents = Bundle.main.executableURL!.deletingLastPathComponent().deletingLastPathComponent()
@@ -89,10 +90,7 @@ final class Engine {
             write(Playback(running: true, track: nil, id: ""))
             return
         }
-        let changed = track.title != previousTrack?.title || track.artist != previousTrack?.artist
-            || track.album != previousTrack?.album || track.duration != previousTrack?.duration
-        let previousID = songID
-        if changed || songID.isEmpty {
+        if !track.matchesSong(previousTrack) || songID.isEmpty {
             do {
                 songID = try library.songID(for: track)
             } catch {
@@ -100,25 +98,17 @@ final class Engine {
                 NSLog("Song history: %@", error.localizedDescription)
             }
         }
-        if !songID.isEmpty, changed || songID != previousID {
-            do {
-                if let art = try media.read(artwork: true), art.track.title == track.title,
-                   art.track.artist == track.artist, let data = art.artworkData, !data.isEmpty {
-                    try data.write(to: BodianFiles.parsed.appendingPathComponent(songID + ".cover"), options: .atomic)
-                }
-            } catch {
-                NSLog("Artwork: %@", error.localizedDescription)
-            }
-        }
         previousTrack = track
         write(Playback(running: true, track: track, id: songID))
     }
 
     private func write(_ state: Playback) {
-        guard state != lastState else { return }
+        let now = Date()
+        if let lastState, !state.shouldPublish(after: lastState, writtenAt: lastWriteAt, now: now) { return }
         do {
             try JSONEncoder().encode(state).write(to: BodianFiles.playback, options: .atomic)
             lastState = state
+            lastWriteAt = now
         } catch {
             NSLog("Playback state: %@", error.localizedDescription)
         }

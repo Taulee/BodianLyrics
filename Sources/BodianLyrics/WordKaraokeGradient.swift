@@ -84,7 +84,7 @@ enum WordKaraokeGradient {
         }) { return hit }
         let p = Palette(fg: fg, unsungColor: unsungColor, dimOpacity: dimOpacity)
         paletteCache.append(p)
-        // 换色场景(封面取色逐曲变)会让旧条目失去引用价值,别让它无限长。
+        // 调色时会产生新条目，限制缓存容量。
         if paletteCache.count > 8 { paletteCache.removeFirst() }
         return p
     }

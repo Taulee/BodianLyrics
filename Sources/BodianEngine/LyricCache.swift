@@ -79,32 +79,17 @@ final class LyricCache {
         let modified = trimmed.isEmpty ? whole : String(whole.dropLast()) + "." + trimmed + "Z"
         do {
             let old = try JSONDecoder().decode(ParsedLyrics.self, from: Data(contentsOf: output))
-            if old.size == info.st_size, Self.sameTimestamp(old.modified, modified, seconds: seconds, nanos: nanos) {
+            if old.size == info.st_size, old.modified == modified {
                 return
             }
         } catch CocoaError.fileReadNoSuchFile {
             // 第一次解析这个歌曲 ID。
+        } catch is DecodingError {
+            // 缓存不可读时用源歌词重建。
         }
         let raw = try Data(contentsOf: file)
         let parsed = ParsedLyrics(modified: modified, size: info.st_size,
                                   lines: LRCX.parse(String(decoding: raw, as: UTF8.self)))
         try JSONEncoder().encode(parsed).write(to: output, options: .atomic)
-    }
-
-    private static func sameTimestamp(_ old: String, _ canonical: String, seconds: Int, nanos: Int) -> Bool {
-        if old == canonical { return true }
-        // 旧缓存可能用本地时区记录修改时间。分开比秒和纳秒，避免浮点精度损失。
-        let date: String
-        let fraction: Int
-        if let dot = old.firstIndex(of: "."),
-           let zone = old[old.index(after: dot)...].firstIndex(where: { !$0.isASCII || !$0.isNumber }) {
-            let digits = String(old[old.index(after: dot)..<zone])
-            fraction = Int(digits.padding(toLength: 9, withPad: "0", startingAt: 0)) ?? -1
-            date = String(old[..<dot]) + old[zone...]
-        } else {
-            fraction = 0
-            date = old
-        }
-        return fraction == nanos && (try? Date.ISO8601FormatStyle().parse(date))?.timeIntervalSince1970 == Double(seconds)
     }
 }

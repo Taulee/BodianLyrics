@@ -32,14 +32,14 @@ struct BodianLibrary {
                 guard let json = sqlite3_column_text(statement, 0) else { continue }
                 let data = Data(bytes: json, count: Int(sqlite3_column_bytes(statement, 0)))
                 let song = try decoder.decode(Song.self, from: data)
-                guard Self.key(song.name ?? "") == title, Self.key(song.artist ?? "") == artist else { continue }
+                guard let id = song.id, Self.key(song.name ?? "") == title, Self.key(song.artist ?? "") == artist else { continue }
                 let duration = song.duration ?? 0
                 let difference = abs(duration - track.duration)
                 let hasDuration = duration > 0 && track.duration > 0
                 if hasDuration, difference / max(duration, track.duration) > 0.12 { continue }
                 if let name = song.album, !name.isEmpty, !track.album.isEmpty,
                    Self.key(name) != album, !hasDuration || difference > 1 { continue }
-                return String(song.id ?? 0)
+                return String(id)
             default: throw databaseError(db)
             }
         }
