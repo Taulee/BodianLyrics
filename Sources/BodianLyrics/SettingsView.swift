@@ -67,6 +67,13 @@ struct SettingsView: View {
                 toggle("长句拆分", "Split long lines", b.splitLongLines)
                 toggle("短句合并", "Merge short lines", b.mergeShortLines)
             }
+            Section(p.label("歌词同步", "Lyric sync")) {
+                HStack {
+                    Text(p.label("全局时间偏移", "Global timing offset"))
+                    Spacer()
+                    offsetControls(model.globalLyricOffset, adjust: model.adjustGlobalLyricOffset)
+                }
+            }
             Section(p.label("当前歌曲", "Current track")) {
                 LabeledContent(p.label("歌名", "Title"), value: model.playback.track?.title ?? "—")
                 LabeledContent(p.label("本地歌词", "Local lyrics"),
@@ -76,11 +83,7 @@ struct SettingsView: View {
                     Text(p.label("歌词时间偏移", "Lyric timing offset"))
                     Spacer()
                     if let offset = model.lyricOffset {
-                        Text(p.offsetLabel(offset)).monospacedDigit().foregroundStyle(.secondary)
-                        ForEach(LyricOffsetAction.allCases, id: \.self) { action in
-                            Button(action.title(p)) { model.adjustLyricOffset(action) }
-                                .disabled(action == .reset && offset == 0)
-                        }
+                        offsetControls(offset, adjust: model.adjustLyricOffset)
                     } else {
                         Text(p.label("等待识别歌曲", "Waiting to identify a song")).foregroundStyle(.secondary)
                     }
@@ -91,6 +94,15 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func offsetControls(_ offset: Int, adjust: @escaping (LyricOffsetAction) -> Void) -> some View {
+        Text(p.offsetLabel(offset)).monospacedDigit().foregroundStyle(.secondary)
+        ForEach(LyricOffsetAction.allCases, id: \.self) { action in
+            Button(action.title(p)) { adjust(action) }
+                .disabled(action == .reset && offset == 0)
+        }
     }
 
     private func restartBackground() {

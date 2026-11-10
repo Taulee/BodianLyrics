@@ -92,12 +92,25 @@ final class PlaybackModel: ObservableObject {
         lyricOffsetSongID.map { preferences.offsets[$0, default: 0] }
     }
 
+    var globalLyricOffset: Int {
+        preferences.globalLyricOffset ?? 0
+    }
+
+    var effectiveLyricOffset: Int {
+        globalLyricOffset + (lyricOffset ?? 0)
+    }
+
     func adjustLyricOffset(_ action: LyricOffsetAction) {
         guard let id = lyricOffsetSongID else { return }
         let previous = preferences.offsets[id, default: 0]
-        let offset = action == .reset ? 0 : previous + action.rawValue
+        let offset = action.applying(to: previous)
         guard previous != offset else { return }
         preferences.offsets[id] = offset == 0 ? nil : offset
+    }
+
+    func adjustGlobalLyricOffset(_ action: LyricOffsetAction) {
+        let offset = action.applying(to: globalLyricOffset)
+        preferences.globalLyricOffset = offset == 0 ? nil : offset
     }
 
     init() {

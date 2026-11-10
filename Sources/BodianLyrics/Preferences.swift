@@ -25,6 +25,10 @@ enum LyricOffsetAction: Int, CaseIterable {
     case later = -100
     case reset = 0
 
+    func applying(to offset: Int) -> Int {
+        self == .reset ? 0 : offset + rawValue
+    }
+
     func title(_ preferences: Preferences) -> String {
         switch self {
         case .earlier: return preferences.label("提前 100 毫秒", "Earlier by 100 ms")
@@ -51,6 +55,7 @@ struct Preferences: Codable, Equatable {
     var splitLongLines = false
     var mergeShortLines = false
     var offsets: [String: Int] = [:]
+    var globalLyricOffset: Int?
 
     var menuWidth = 250.0
     var menuMaxCharacters = 60

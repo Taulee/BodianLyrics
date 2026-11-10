@@ -59,7 +59,7 @@ struct MenuBarView: View {
     private func lyricTimeline(layout: LyricLayout, track: Track?, font: NSFont, width: CGFloat) -> some View {
         let p = model.preferences
         let songID = preview ? "" : model.playback.id
-        let offset = preview ? 0 : model.lyricOffset ?? 0
+        let offset = preview ? 0 : model.effectiveLyricOffset
         let clock = model.lyricClock
         let unsung = hexColor(p.menuTextColor)
         let fill = hexColor(p.menuFillColor) ?? unsung ?? .primary

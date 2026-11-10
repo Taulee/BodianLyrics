@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 project_dir="$PWD"
-version="${1:-1.0.0}"
+version="${1:-1.1.0}"
 architecture="$(uname -m)"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
